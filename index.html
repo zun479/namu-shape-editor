@@ -674,7 +674,7 @@
     const layers = frontToBack.map(s => {
       const color = hexToRgba(s.fill, s.opacity);
       const image = s.type === 'ellipse'
-        ? `radial-gradient(ellipse at center, ${color} 0%, ${color} 100%)`
+        ? `radial-gradient(ellipse 50% 50% at 50% 50%, ${color} 99%, transparent 100%)`
         : `linear-gradient(${color}, ${color})`;
       return `${image} ${s.x}px ${s.y}px / ${s.w}px ${s.h}px no-repeat`;
     });
