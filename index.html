@@ -1054,102 +1054,87 @@
   }
 
   // --- Export ---
-  async function buildWikiSyntax(){
-    const lines = [];
-    lines.push(`{{{#!wiki style="position: relative; width: ${canvasSize.w}px; height: ${canvasSize.h}px; background-color: ${canvasSize.bg}; overflow: hidden;"`);
-    const sorted = [...shapes].sort((a, b) => a.z - b.z);
-    let imgIndex = 0;
+  // 나무위키는 position: absolute를 필터링해서 무시하기 때문에(자식들이 문서 순서대로 세로로 쌓여버림),
+  // 절대 위치 지정 대신 "박스 하나 + 여러 겹의 background-image"로 좌표를 표현한다.
+  // - 회전 없는 사각형/타원은 CSS 그라디언트만으로 만든다 (position 불필요, 실사용 예시로 확인된 방식)
+  // - 회전/둥근모서리/텍스트처럼 그라디언트로 못 만드는 도형은 캔버스로 구워서
+  //   base64 PNG를 그대로 background-image: url(data:...)에 박아 넣는다 (별도 업로드 불필요)
+  function hexToRgba(hex, opacityPercent){
+    if(!hex || hex === 'transparent') return 'rgba(0,0,0,0)';
+    let h = hex.replace('#', '');
+    if(h.length === 3) h = h.split('').map(c => c + c).join('');
+    const r = parseInt(h.substring(0, 2), 16) || 0;
+    const g = parseInt(h.substring(2, 4), 16) || 0;
+    const b = parseInt(h.substring(4, 6), 16) || 0;
+    const a = (opacityPercent ?? 100) / 100;
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
 
-    for(const s of sorted){
-      if(s.rotation && s.type !== 'text'){
-        // 사각형/타원은 transform 대신 clip-path로 회전 모양을 흉내냄 (순수 텍스트 문법)
-        const { bbX, bbY, bbW, bbH, polygon } = rotatedClipPath(s);
-        const styleParts = [
-          'position: absolute',
-          `left: ${bbX}px`,
-          `top: ${bbY}px`,
-          `width: ${bbW}px`,
-          `height: ${bbH}px`,
-          `background-color: ${s.fill}`,
-          `clip-path: polygon(${polygon})`
-        ];
-        if(s.opacity !== undefined && s.opacity < 100) styleParts.push(`opacity: ${(s.opacity/100).toFixed(2)}`);
-        lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
-        lines.push('}}}');
-        continue;
-      }
-      if(s.rotation && s.type === 'text'){
-        // 회전된 텍스트는 clip-path로 글자 모양까지 표현할 수 없어 이미지로 구워서 내보냄
-        imgIndex++;
-        const filename = `namu_shape_${imgIndex}.png`;
-        const canvas = shapeToCanvas(s);
-        const blob = await canvasToBlob(canvas);
-        downloadBlob(blob, filename);
-        const { bbX, bbY, bbW, bbH } = rotatedBBox(s);
-        lines.push(`{{{#!wiki style="position: absolute; left: ${bbX}px; top: ${bbY}px; width: ${bbW}px; height: ${bbH}px;"`);
-        lines.push(`[[파일:${filename}|width=${bbW}]]`);
-        lines.push('}}}');
-        continue;
-      }
+  function buildWikiSyntax(){
+    // background-image 목록은 "앞쪽(첫 항목)이 위로" 그려지므로 z가 높은(앞) 도형부터 나열
+    const frontToBack = [...shapes].sort((a, b) => b.z - a.z);
 
-      const styleParts = [
-        'position: absolute',
-        `left: ${s.x}px`,
-        `top: ${s.y}px`,
-        `width: ${s.w}px`,
-        `height: ${s.h}px`
-      ];
-      if(s.opacity !== undefined && s.opacity < 100) styleParts.push(`opacity: ${(s.opacity/100).toFixed(2)}`);
+    const images = [];
+    const positions = [];
+    const sizes = [];
+    const repeats = [];
+    let complexCount = 0;
 
-      if(s.type === 'rect'){
-        styleParts.push(`background-color: ${s.fill}`);
-        if(s.radius) styleParts.push(`border-radius: ${s.radius}px`);
+    frontToBack.forEach(s => {
+      const needsImage = !!s.rotation || s.type === 'text' || (s.type === 'rect' && s.radius > 0);
+
+      if(needsImage){
+        complexCount++;
+        const canvas = shapeToCanvas(s); // rotation 0이어도 그대로 동작(둥근모서리/텍스트 굽기용)
+        const dataUrl = canvas.toDataURL('image/png');
+        const box = s.rotation ? rotatedBBox(s) : { bbX: s.x, bbY: s.y, bbW: s.w, bbH: s.h };
+        images.push(`url(${dataUrl})`);
+        positions.push(`${box.bbX}px ${box.bbY}px`);
+        sizes.push(`${box.bbW}px ${box.bbH}px`);
       } else if(s.type === 'ellipse'){
-        styleParts.push(`background-color: ${s.fill}`);
-        styleParts.push('border-radius: 50%');
-      } else if(s.type === 'text'){
-        if(s.fill && s.fill !== 'transparent') styleParts.push(`background-color: ${s.fill}`);
-        styleParts.push(`color: ${s.color}`);
-        styleParts.push(`font-size: ${s.fontSize}px`);
-        styleParts.push(`font-weight: ${s.fontWeight}`);
-        styleParts.push('display: flex');
-        styleParts.push('align-items: center');
-        styleParts.push(`justify-content: ${s.align === 'left' ? 'flex-start' : s.align === 'right' ? 'flex-end' : 'center'}`);
-        styleParts.push(`text-align: ${s.align}`);
+        const color = hexToRgba(s.fill, s.opacity);
+        images.push(`radial-gradient(ellipse at center, ${color} 0%, ${color} 100%)`);
+        positions.push(`${s.x}px ${s.y}px`);
+        sizes.push(`${s.w}px ${s.h}px`);
+      } else {
+        // 회전 없고 모서리도 각진 사각형
+        const color = hexToRgba(s.fill, s.opacity);
+        images.push(`linear-gradient(${color}, ${color})`);
+        positions.push(`${s.x}px ${s.y}px`);
+        sizes.push(`${s.w}px ${s.h}px`);
       }
+      repeats.push('no-repeat');
+    });
 
-      lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
-      if(s.type === 'text'){
-        lines.push(s.text);
-      }
-      lines.push('}}}');
+    const styleParts = [
+      `width: ${canvasSize.w}px`,
+      `height: ${canvasSize.h}px`,
+      `background-color: ${canvasSize.bg}`
+    ];
+    if(images.length){
+      styleParts.push(`background-image: ${images.join(', ')}`);
+      styleParts.push(`background-position: ${positions.join(', ')}`);
+      styleParts.push(`background-size: ${sizes.join(', ')}`);
+      styleParts.push(`background-repeat: ${repeats.join(', ')}`);
     }
-    lines.push('}}}');
-    return { code: lines.join('\n'), imageCount: imgIndex };
+
+    const code = `{{{#!wiki style="${styleParts.join('; ')};"\n}}}`;
+    return { code, complexCount, totalCount: frontToBack.length };
   }
 
   const exportModal = document.getElementById('exportModal');
   const exportCode = document.getElementById('exportCode');
   const exportNote = document.getElementById('exportNote');
 
-  document.getElementById('exportBtn').addEventListener('click', async () => {
-    const exportBtn = document.getElementById('exportBtn');
-    const originalLabel = exportBtn.textContent;
-    exportBtn.textContent = '생성 중...';
-    exportBtn.disabled = true;
-    try{
-      const { code, imageCount } = await buildWikiSyntax();
-      exportCode.value = code;
-      if(imageCount > 0){
-        exportNote.innerHTML = `도형 회전은 <code>clip-path</code>로 표현해서 코드에 바로 들어갔어요. 다만 <b>회전된 텍스트 ${imageCount}개</b>는 글자 모양까지 표현할 수 없어 이미지(PNG)로 자동 다운로드했어요.<br>1) 다운로드된 <code>namu_shape_1.png</code> 등의 파일을 나무위키 문서에 먼저 업로드하고<br>2) 아래 코드의 <code>[[파일:namu_shape_1.png...]]</code> 부분을 실제 업로드된 파일명으로 맞춰주세요.<br><br>⚠️ 나무위키가 <code>clip-path</code>도 걸러낼 수 있으니, 붙여넣었을 때 회전이 안 보이면 알려주세요.`;
-      } else {
-        exportNote.innerHTML = '아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요. (회전은 transform 대신 clip-path로 표현했어요 — 안 먹히면 알려주세요.)';
-      }
-      exportModal.classList.add('open');
-    } finally {
-      exportBtn.textContent = originalLabel;
-      exportBtn.disabled = false;
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    const { code, complexCount, totalCount } = buildWikiSyntax();
+    exportCode.value = code;
+    if(complexCount > 0){
+      exportNote.innerHTML = `도형 <b>${totalCount}개</b> 중 회전·둥근모서리·텍스트가 들어간 <b>${complexCount}개</b>는 이미지로 구워서 코드 안에 그대로 인코딩했어요(별도 업로드 불필요, base64라 코드가 좀 길어요).<br><br>⚠️ 나무위키가 <code>position: absolute</code>는 걸러내는 걸 확인했어요. 이번 방식(background-image 겹치기)은 실제 나무위키 문서에서 쓰이는 걸 확인한 기법이지만, <code>background-image: url(data:...)</code>는 아직 확인 못 했어요 — 붙여넣었을 때 이미지 부분(회전/텍스트)이 안 보이면 꼭 알려주세요.`;
+    } else {
+      exportNote.innerHTML = '아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요. (position 대신 background-image 겹치기 방식이라 좌표가 안 밀려요.)';
     }
+    exportModal.classList.add('open');
   });
   document.getElementById('closeModalBtn').addEventListener('click', () => {
     exportModal.classList.remove('open');
