@@ -1074,49 +1074,42 @@
     // background-image 목록은 "앞쪽(첫 항목)이 위로" 그려지므로 z가 높은(앞) 도형부터 나열
     const frontToBack = [...shapes].sort((a, b) => b.z - a.z);
 
-    const images = [];
-    const positions = [];
-    const sizes = [];
-    const repeats = [];
+    const layers = [];
     let complexCount = 0;
 
     frontToBack.forEach(s => {
       const needsImage = !!s.rotation || s.type === 'text' || (s.type === 'rect' && s.radius > 0);
+      let image, x, y, w, h;
 
       if(needsImage){
         complexCount++;
         const canvas = shapeToCanvas(s); // rotation 0이어도 그대로 동작(둥근모서리/텍스트 굽기용)
         const dataUrl = canvas.toDataURL('image/png');
         const box = s.rotation ? rotatedBBox(s) : { bbX: s.x, bbY: s.y, bbW: s.w, bbH: s.h };
-        images.push(`url(${dataUrl})`);
-        positions.push(`${box.bbX}px ${box.bbY}px`);
-        sizes.push(`${box.bbW}px ${box.bbH}px`);
+        image = `url(${dataUrl})`;
+        x = box.bbX; y = box.bbY; w = box.bbW; h = box.bbH;
       } else if(s.type === 'ellipse'){
         const color = hexToRgba(s.fill, s.opacity);
-        images.push(`radial-gradient(ellipse at center, ${color} 0%, ${color} 100%)`);
-        positions.push(`${s.x}px ${s.y}px`);
-        sizes.push(`${s.w}px ${s.h}px`);
+        image = `radial-gradient(ellipse at center, ${color} 0%, ${color} 100%)`;
+        x = s.x; y = s.y; w = s.w; h = s.h;
       } else {
         // 회전 없고 모서리도 각진 사각형
         const color = hexToRgba(s.fill, s.opacity);
-        images.push(`linear-gradient(${color}, ${color})`);
-        positions.push(`${s.x}px ${s.y}px`);
-        sizes.push(`${s.w}px ${s.h}px`);
+        image = `linear-gradient(${color}, ${color})`;
+        x = s.x; y = s.y; w = s.w; h = s.h;
       }
-      repeats.push('no-repeat');
+      // background 축약형: "이미지 X위치 Y위치 / 너비 높이 반복"
+      layers.push(`${image} ${x}px ${y}px / ${w}px ${h}px no-repeat`);
     });
+
+    // 축약형에서 색상은 맨 마지막 레이어에만 붙을 수 있어서, 캔버스 배경색을 순수 색상 레이어로 맨 뒤에 추가
+    layers.push(canvasSize.bg);
 
     const styleParts = [
       `width: ${canvasSize.w}px`,
       `height: ${canvasSize.h}px`,
-      `background-color: ${canvasSize.bg}`
+      `background: ${layers.join(', ')}`
     ];
-    if(images.length){
-      styleParts.push(`background-image: ${images.join(', ')}`);
-      styleParts.push(`background-position: ${positions.join(', ')}`);
-      styleParts.push(`background-size: ${sizes.join(', ')}`);
-      styleParts.push(`background-repeat: ${repeats.join(', ')}`);
-    }
 
     const code = `{{{#!wiki style="${styleParts.join('; ')};"\n}}}`;
     return { code, complexCount, totalCount: frontToBack.length };
@@ -1130,9 +1123,9 @@
     const { code, complexCount, totalCount } = buildWikiSyntax();
     exportCode.value = code;
     if(complexCount > 0){
-      exportNote.innerHTML = `도형 <b>${totalCount}개</b> 중 회전·둥근모서리·텍스트가 들어간 <b>${complexCount}개</b>는 이미지로 구워서 코드 안에 그대로 인코딩했어요(별도 업로드 불필요, base64라 코드가 좀 길어요).<br><br>⚠️ 나무위키가 <code>position: absolute</code>는 걸러내는 걸 확인했어요. 이번 방식(background-image 겹치기)은 실제 나무위키 문서에서 쓰이는 걸 확인한 기법이지만, <code>background-image: url(data:...)</code>는 아직 확인 못 했어요 — 붙여넣었을 때 이미지 부분(회전/텍스트)이 안 보이면 꼭 알려주세요.`;
+      exportNote.innerHTML = `도형 <b>${totalCount}개</b> 중 회전·둥근모서리·텍스트가 들어간 <b>${complexCount}개</b>는 이미지로 구워서 코드 안에 그대로 인코딩했어요(별도 업로드 불필요, base64라 코드가 좀 길어요).<br><br>⚠️ 나무위키가 <code>background-image</code> 같은 개별(longhand) 속성은 걸러내고 <code>background</code> 축약형만 허용하는 걸로 보여서, 이번엔 전부 <code>background:</code> 한 줄로 합쳤어요. <code>url(data:...)</code> 이미지가 이 축약형 안에서도 통하는지는 아직 확인 못 했으니, 붙여넣었을 때 이미지로 구워진 도형(회전/텍스트)이 안 보이면 꼭 알려주세요.`;
     } else {
-      exportNote.innerHTML = '아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요. (position 대신 background-image 겹치기 방식이라 좌표가 안 밀려요.)';
+      exportNote.innerHTML = '아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요. (position 대신 background 축약형 겹치기 방식이라 좌표가 안 밀려요.)';
     }
     exportModal.classList.add('open');
   });
