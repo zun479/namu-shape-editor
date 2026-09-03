@@ -474,7 +474,7 @@
 <div class="modal-overlay" id="exportModal">
   <div class="modal">
     <h2>나무위키 문법</h2>
-    <p>아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요.</p>
+    <p id="exportNote">아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요.</p>
     <textarea id="exportCode" readonly></textarea>
     <div class="modal-footer">
       <button class="btn" id="closeModalBtn">닫기</button>
@@ -924,12 +924,174 @@
     render();
   });
 
+  // --- 회전 도형 -> 이미지 변환 (나무위키가 transform을 걸러내므로 회전은 이미지로 구워서 내보냄) ---
+  function rotatedBBox(s){
+    const rad = s.rotation * Math.PI / 180;
+    const cos = Math.abs(Math.cos(rad));
+    const sin = Math.abs(Math.sin(rad));
+    const bbW = Math.max(1, Math.round(s.w * cos + s.h * sin));
+    const bbH = Math.max(1, Math.round(s.w * sin + s.h * cos));
+    const cx = s.x + s.w / 2;
+    const cy = s.y + s.h / 2;
+    return {
+      bbX: Math.round(cx - bbW / 2),
+      bbY: Math.round(cy - bbH / 2),
+      bbW, bbH
+    };
+  }
+
+  // 회전된 도형의 윤곽선(다각형) 좌표를 계산 - transform 없이 clip-path만으로 회전을 표현하기 위함
+  function shapeOutlinePoints(s){
+    const w = s.w, h = s.h;
+    if(s.type === 'ellipse'){
+      const N = 40;
+      const pts = [];
+      for(let i = 0; i < N; i++){
+        const t = (i / N) * Math.PI * 2;
+        pts.push([(w / 2) * Math.cos(t), (h / 2) * Math.sin(t)]);
+      }
+      return pts;
+    }
+    // rect (모서리가 둥글면 근사 곡선으로)
+    const r = Math.max(0, Math.min(s.radius || 0, w / 2, h / 2));
+    if(r < 1){
+      return [[-w/2,-h/2],[w/2,-h/2],[w/2,h/2],[-w/2,h/2]];
+    }
+    const seg = 6;
+    function arc(cx, cy, a0, a1){
+      const arr = [];
+      for(let i = 0; i <= seg; i++){
+        const t = a0 + (a1 - a0) * (i / seg);
+        arr.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]);
+      }
+      return arr;
+    }
+    return [
+      ...arc(-w/2 + r, -h/2 + r, Math.PI, 1.5 * Math.PI),
+      ...arc(w/2 - r, -h/2 + r, 1.5 * Math.PI, 2 * Math.PI),
+      ...arc(w/2 - r, h/2 - r, 0, 0.5 * Math.PI),
+      ...arc(-w/2 + r, h/2 - r, 0.5 * Math.PI, Math.PI)
+    ];
+  }
+
+  function rotatedClipPath(s){
+    const rad = s.rotation * Math.PI / 180;
+    const cosA = Math.cos(rad), sinA = Math.sin(rad);
+    const { bbX, bbY, bbW, bbH } = rotatedBBox(s);
+    const pts = shapeOutlinePoints(s);
+    const polygon = pts.map(([px, py]) => {
+      const rx = px * cosA - py * sinA;
+      const ry = px * sinA + py * cosA;
+      return `${(bbW/2 + rx).toFixed(1)}px ${(bbH/2 + ry).toFixed(1)}px`;
+    }).join(', ');
+    return { bbX, bbY, bbW, bbH, polygon };
+  }
+
+  function drawRoundedRectPath(ctx, x, y, w, h, r){
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function shapeToCanvas(s, scale){
+    scale = scale || 2;
+    const { bbW, bbH } = rotatedBBox(s);
+    const canvas = document.createElement('canvas');
+    canvas.width = bbW * scale;
+    canvas.height = bbH * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.translate(bbW / 2, bbH / 2);
+    ctx.rotate(s.rotation * Math.PI / 180);
+    ctx.globalAlpha = (s.opacity ?? 100) / 100;
+
+    if(s.type === 'rect'){
+      ctx.fillStyle = s.fill;
+      drawRoundedRectPath(ctx, -s.w / 2, -s.h / 2, s.w, s.h, s.radius || 0);
+      ctx.fill();
+    } else if(s.type === 'ellipse'){
+      ctx.fillStyle = s.fill;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, s.w / 2, s.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else if(s.type === 'text'){
+      if(s.fill && s.fill !== 'transparent'){
+        ctx.fillStyle = s.fill;
+        ctx.fillRect(-s.w / 2, -s.h / 2, s.w, s.h);
+      }
+      ctx.fillStyle = s.color;
+      ctx.font = `${s.fontWeight} ${s.fontSize}px "Pretendard", "Apple SD Gothic Neo", sans-serif`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = s.align === 'left' ? 'left' : s.align === 'right' ? 'right' : 'center';
+      const anchorX = s.align === 'left' ? -s.w / 2 + 4 : s.align === 'right' ? s.w / 2 - 4 : 0;
+      const lines = s.text.split('\n');
+      const lineHeight = s.fontSize * 1.25;
+      const totalH = lineHeight * lines.length;
+      const startY = -totalH / 2 + lineHeight / 2;
+      lines.forEach((line, i) => ctx.fillText(line, anchorX, startY + i * lineHeight));
+    }
+    return canvas;
+  }
+
+  function canvasToBlob(canvas){
+    return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  }
+
+  function downloadBlob(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
   // --- Export ---
-  function buildWikiSyntax(){
+  async function buildWikiSyntax(){
     const lines = [];
     lines.push(`{{{#!wiki style="position: relative; width: ${canvasSize.w}px; height: ${canvasSize.h}px; background-color: ${canvasSize.bg}; overflow: hidden;"`);
-    const sorted = [...shapes].sort((a,b) => a.z - b.z);
-    sorted.forEach(s => {
+    const sorted = [...shapes].sort((a, b) => a.z - b.z);
+    let imgIndex = 0;
+
+    for(const s of sorted){
+      if(s.rotation && s.type !== 'text'){
+        // 사각형/타원은 transform 대신 clip-path로 회전 모양을 흉내냄 (순수 텍스트 문법)
+        const { bbX, bbY, bbW, bbH, polygon } = rotatedClipPath(s);
+        const styleParts = [
+          'position: absolute',
+          `left: ${bbX}px`,
+          `top: ${bbY}px`,
+          `width: ${bbW}px`,
+          `height: ${bbH}px`,
+          `background-color: ${s.fill}`,
+          `clip-path: polygon(${polygon})`
+        ];
+        if(s.opacity !== undefined && s.opacity < 100) styleParts.push(`opacity: ${(s.opacity/100).toFixed(2)}`);
+        lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
+        lines.push('}}}');
+        continue;
+      }
+      if(s.rotation && s.type === 'text'){
+        // 회전된 텍스트는 clip-path로 글자 모양까지 표현할 수 없어 이미지로 구워서 내보냄
+        imgIndex++;
+        const filename = `namu_shape_${imgIndex}.png`;
+        const canvas = shapeToCanvas(s);
+        const blob = await canvasToBlob(canvas);
+        downloadBlob(blob, filename);
+        const { bbX, bbY, bbW, bbH } = rotatedBBox(s);
+        lines.push(`{{{#!wiki style="position: absolute; left: ${bbX}px; top: ${bbY}px; width: ${bbW}px; height: ${bbH}px;"`);
+        lines.push(`[[파일:${filename}|width=${bbW}]]`);
+        lines.push('}}}');
+        continue;
+      }
+
       const styleParts = [
         'position: absolute',
         `left: ${s.x}px`,
@@ -937,7 +1099,6 @@
         `width: ${s.w}px`,
         `height: ${s.h}px`
       ];
-      if(s.rotation) styleParts.push(`transform: rotate(${s.rotation}deg)`);
       if(s.opacity !== undefined && s.opacity < 100) styleParts.push(`opacity: ${(s.opacity/100).toFixed(2)}`);
 
       if(s.type === 'rect'){
@@ -962,17 +1123,33 @@
         lines.push(s.text);
       }
       lines.push('}}}');
-    });
+    }
     lines.push('}}}');
-    return lines.join('\n');
+    return { code: lines.join('\n'), imageCount: imgIndex };
   }
 
   const exportModal = document.getElementById('exportModal');
   const exportCode = document.getElementById('exportCode');
+  const exportNote = document.getElementById('exportNote');
 
-  document.getElementById('exportBtn').addEventListener('click', () => {
-    exportCode.value = buildWikiSyntax();
-    exportModal.classList.add('open');
+  document.getElementById('exportBtn').addEventListener('click', async () => {
+    const exportBtn = document.getElementById('exportBtn');
+    const originalLabel = exportBtn.textContent;
+    exportBtn.textContent = '생성 중...';
+    exportBtn.disabled = true;
+    try{
+      const { code, imageCount } = await buildWikiSyntax();
+      exportCode.value = code;
+      if(imageCount > 0){
+        exportNote.innerHTML = `도형 회전은 <code>clip-path</code>로 표현해서 코드에 바로 들어갔어요. 다만 <b>회전된 텍스트 ${imageCount}개</b>는 글자 모양까지 표현할 수 없어 이미지(PNG)로 자동 다운로드했어요.<br>1) 다운로드된 <code>namu_shape_1.png</code> 등의 파일을 나무위키 문서에 먼저 업로드하고<br>2) 아래 코드의 <code>[[파일:namu_shape_1.png...]]</code> 부분을 실제 업로드된 파일명으로 맞춰주세요.<br><br>⚠️ 나무위키가 <code>clip-path</code>도 걸러낼 수 있으니, 붙여넣었을 때 회전이 안 보이면 알려주세요.`;
+      } else {
+        exportNote.innerHTML = '아래 코드를 전체 복사해서 나무위키 편집창의 테이블 셀 안에 붙여넣으면 지금 배치한 도형이 그대로 나와요. (회전은 transform 대신 clip-path로 표현했어요 — 안 먹히면 알려주세요.)';
+      }
+      exportModal.classList.add('open');
+    } finally {
+      exportBtn.textContent = originalLabel;
+      exportBtn.disabled = false;
+    }
   });
   document.getElementById('closeModalBtn').addEventListener('click', () => {
     exportModal.classList.remove('open');
