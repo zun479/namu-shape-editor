@@ -86,13 +86,6 @@
     position:absolute; width:14px;height:14px; background: var(--accent); border: 2px solid #0B1410;
     border-radius:4px; right:-7px; bottom:-7px; cursor: nwse-resize; touch-action:none;
   }
-  .rotate-handle{
-    position:absolute; width:12px;height:12px; background: #fff; border: 2px solid var(--accent);
-    border-radius:50%; left:50%; top:-24px; transform: translateX(-50%); cursor: grab; touch-action:none;
-  }
-  .rotate-stem{ position:absolute; left:50%; top:-14px; width:1px; height:14px; background: var(--accent); transform: translateX(-50%); }
-  body.device-mobile .rotate-handle{ width:26px; height:26px; top:-34px; }
-  body.device-mobile .rotate-stem{ top:-18px; height:18px; }
   body.device-mobile .resize-handle{ width:30px; height:30px; right:-15px; bottom:-15px; border-radius:8px; }
   .props{
     background: var(--bg-panel); border-left: 1px solid var(--border); padding: 16px 14px;
@@ -273,9 +266,6 @@
       x: Math.round(canvasSize.w/2 - 60), y: Math.round(canvasSize.h/2 - 40),
       w: 120, h: 80, fill: '#4ADE9A', opacity: 100, z: shapes.length + 1
     };
-    if(type === 'rect' || type === 'ellipse'){
-      base.rotation = 0;
-    }
     if(type === 'text'){
       base.w = 160; base.h = 40;
       base.text = '텍스트 입력'; base.fontSize = 20; base.color = '#111111';
@@ -455,7 +445,7 @@
       if(s.rotation){
         const note = document.createElement('div');
         note.className = 'note-box';
-        note.textContent = '회전은 clip-path로 윤곽선을 계산해서 내보내요 (아직 나무위키에서 검증되지 않은 실험적 기능이에요).';
+        note.textContent = '회전은 가로줄로 잘게 쪼갠 그라디언트 조각들로 그려서 내보내요 (도트아트 원리). 세밀할수록 코드가 길어져요.';
         propsPanel.appendChild(note);
       }
     } else if(s.type === 'text'){
@@ -625,7 +615,9 @@
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
 
-  // --- 회전 도형을 clip-path 다각형으로 표현하기 위한 좌표 계산 ---
+  // --- 회전 도형을 "가로줄로 잘게 쪼갠 gradient 조각들"로 그리기 (실제 나무위키 도트아트와 같은 원리) ---
+  const RASTER_STEP = 3; // 한 줄(스캔라인)의 두께(px). 작을수록 매끈하지만 코드가 길어짐
+
   function rotatedBBox(s){
     const rad = (s.rotation || 0) * Math.PI / 180;
     const cos = Math.abs(Math.cos(rad));
@@ -640,7 +632,7 @@
   function shapeOutlinePoints(s){
     const w = s.w, h = s.h;
     if(s.type === 'ellipse'){
-      const N = 36;
+      const N = 48;
       const pts = [];
       for(let i = 0; i < N; i++){
         const t = (i / N) * Math.PI * 2;
@@ -651,90 +643,111 @@
     return [[-w/2,-h/2],[w/2,-h/2],[w/2,h/2],[-w/2,h/2]];
   }
 
-  function rotatedClipPath(s){
+  // 도형의 윤곽선을 회전시켜 bbox 기준 로컬 좌표(숫자)로 반환
+  function rotatedLocalPoints(s){
     const rad = (s.rotation || 0) * Math.PI / 180;
     const cosA = Math.cos(rad), sinA = Math.sin(rad);
-    const { bbX, bbY, bbW, bbH } = rotatedBBox(s);
-    const pts = shapeOutlinePoints(s);
-    const polygon = pts.map(([px, py]) => {
+    const { bbW, bbH } = rotatedBBox(s);
+    return shapeOutlinePoints(s).map(([px, py]) => {
       const rx = px * cosA - py * sinA;
       const ry = px * sinA + py * cosA;
-      return `${(bbW/2 + rx).toFixed(1)}px ${(bbH/2 + ry).toFixed(1)}px`;
-    }).join(', ');
-    return { bbX, bbY, bbW, bbH, polygon };
+      return [bbW / 2 + rx, bbH / 2 + ry];
+    });
+  }
+
+  // 볼록 다각형과 수평선(y)의 교차 구간 [xLeft, xRight]을 구함
+  function scanlineSpan(points, y){
+    const xs = [];
+    for(let i = 0; i < points.length; i++){
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[(i + 1) % points.length];
+      if((y1 <= y && y2 > y) || (y2 <= y && y1 > y)){
+        const t = (y - y1) / (y2 - y1);
+        xs.push(x1 + t * (x2 - x1));
+      }
+    }
+    if(xs.length < 2) return null;
+    return [Math.min(...xs), Math.max(...xs)];
+  }
+
+  // 회전 도형 하나를 여러 개의 얇은 linear-gradient 조각(스캔라인)으로 분해
+  function rasterizeShape(s, step){
+    const { bbX, bbY, bbW, bbH } = rotatedBBox(s);
+    const points = rotatedLocalPoints(s);
+    const color = hexToRgba(s.fill, s.opacity);
+    const layers = [];
+    for(let y = 0; y < bbH; y += step){
+      const span = scanlineSpan(points, y + step / 2);
+      if(!span) continue;
+      const [xL, xR] = span;
+      const w = Math.max(0.5, xR - xL);
+      layers.push(`linear-gradient(${color}, ${color}) ${(bbX + xL).toFixed(1)}px ${(bbY + y).toFixed(1)}px / ${w.toFixed(1)}px ${step}px no-repeat`);
+    }
+    return layers;
   }
 
   function buildWikiSyntax(){
-    const plainShapes = shapes.filter(s => (s.type === 'rect' || s.type === 'ellipse') && !s.rotation);
-    const rotatedShapes = shapes.filter(s => (s.type === 'rect' || s.type === 'ellipse') && s.rotation);
-    const texts = shapes.filter(s => s.type === 'text');
+    const rectEllipseShapes = shapes.filter(s => s.type === 'rect' || s.type === 'ellipse');
+    const texts = shapes.filter(s => s.type === 'text').sort((a, b) => a.z - b.z);
 
-    // 1) 회전 없는 사각형/원 -> 하나의 배경 겹치기 박스로 압축 (검증된 방식)
-    const frontToBack = [...plainShapes].sort((a, b) => b.z - a.z);
-    const layers = frontToBack.map(s => {
-      const color = hexToRgba(s.fill, s.opacity);
-      const image = s.type === 'ellipse'
-        ? `radial-gradient(ellipse 50% 50% at 50% 50%, ${color} 99%, transparent 100%)`
-        : `linear-gradient(${color}, ${color})`;
-      return `${image} ${s.x}px ${s.y}px / ${s.w}px ${s.h}px no-repeat`;
+    // 사각형/원은 회전 여부와 관계없이 전부 하나의 background 겹치기 박스에 합친다.
+    // 회전 없는 도형은 깔끔한 단일 레이어로, 회전된 도형은 여러 스캔라인 조각으로 확장해서 끼워 넣는다.
+    const frontToBack = [...rectEllipseShapes].sort((a, b) => b.z - a.z);
+    const allLayers = [];
+    let rasterCount = 0;
+
+    frontToBack.forEach(s => {
+      if(s.rotation){
+        const raster = rasterizeShape(s, RASTER_STEP);
+        rasterCount += raster.length;
+        allLayers.push(...raster);
+      } else {
+        const color = hexToRgba(s.fill, s.opacity);
+        const image = s.type === 'ellipse'
+          ? `radial-gradient(ellipse 50% 50% at 50% 50%, ${color} 99%, transparent 100%)`
+          : `linear-gradient(${color}, ${color})`;
+        allLayers.push(`${image} ${s.x}px ${s.y}px / ${s.w}px ${s.h}px no-repeat`);
+      }
     });
-    layers.push(canvasSize.bg);
+    allLayers.push(canvasSize.bg);
 
     const lines = [];
-    let flowY = 0; // 지금까지 문서 흐름상 쌓인 세로 높이 (다음 요소의 기본 시작점)
+    let flowY = 0;
 
-    if(plainShapes.length > 0){
-      lines.push(`{{{#!wiki style="width: ${canvasSize.w}px; height: ${canvasSize.h}px; background: ${layers.join(', ')};"`);
+    if(rectEllipseShapes.length > 0){
+      lines.push(`{{{#!wiki style="width: ${canvasSize.w}px; height: ${canvasSize.h}px; background: ${allLayers.join(', ')};"`);
       lines.push('}}}');
       flowY = canvasSize.h;
     }
 
-    // 2) 회전 도형 + 텍스트는 각자 개별 블록으로, 음수 margin으로 끌어올려 원하는 좌표에 겹친다
-    //    (position/transform 없이: margin은 흐름을 옮기고, clip-path는 윤곽선만 잘라낼 뿐 요소를 움직이지 않는다)
-    const overlays = [...rotatedShapes, ...texts].sort((a, b) => a.z - b.z);
-
-    overlays.forEach(s => {
-      if(s.type === 'text'){
-        const marginTop = Math.round(s.y - flowY);
-        const styleParts = [
-          `width: ${s.w}px`,
-          `height: ${s.h}px`,
-          `margin: ${marginTop}px 0 0 ${s.x}px`,
-          'overflow: hidden',
-          `font-size: ${s.fontSize}px`,
-          `font-weight: ${s.fontWeight}`,
-          `color: ${s.color}`,
-          `text-align: ${s.align}`,
-          'display: flex',
-          'align-items: center',
-          `justify-content: ${s.align === 'left' ? 'flex-start' : s.align === 'right' ? 'flex-end' : 'center'}`
-        ];
-        if(s.fill && s.fill !== 'transparent') styleParts.push(`background-color: ${s.fill}`);
-        lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
-        lines.push(s.text);
-        lines.push('}}}');
-        flowY = s.y + s.h;
-      } else {
-        const { bbX, bbY, bbW, bbH, polygon } = rotatedClipPath(s);
-        const marginTop = Math.round(bbY - flowY);
-        const color = hexToRgba(s.fill, s.opacity);
-        const styleParts = [
-          `width: ${bbW}px`,
-          `height: ${bbH}px`,
-          `margin: ${marginTop}px 0 0 ${bbX}px`,
-          `background-color: ${color}`,
-          `clip-path: polygon(${polygon})`
-        ];
-        lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
-        lines.push('}}}');
-        flowY = bbY + bbH;
-      }
+    // 텍스트는 여전히 음수 margin으로 끌어올려 도형 위 지정 좌표에 겹친다 (검증된 방식)
+    texts.forEach(s => {
+      const marginTop = Math.round(s.y - flowY);
+      const styleParts = [
+        `width: ${s.w}px`,
+        `height: ${s.h}px`,
+        `margin: ${marginTop}px 0 0 ${s.x}px`,
+        'overflow: hidden',
+        `font-size: ${s.fontSize}px`,
+        `font-weight: ${s.fontWeight}`,
+        `color: ${s.color}`,
+        `text-align: ${s.align}`,
+        'display: flex',
+        'align-items: center',
+        `justify-content: ${s.align === 'left' ? 'flex-start' : s.align === 'right' ? 'flex-end' : 'center'}`
+      ];
+      if(s.fill && s.fill !== 'transparent') styleParts.push(`background-color: ${s.fill}`);
+      lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
+      lines.push(s.text);
+      lines.push('}}}');
+      flowY = s.y + s.h;
     });
 
     return {
       code: lines.join('\n'),
-      shapeCount: plainShapes.length,
-      rotatedCount: rotatedShapes.length,
+      shapeCount: rectEllipseShapes.length,
+      rotatedCount: rectEllipseShapes.filter(s => s.rotation).length,
+      rasterLayerCount: rasterCount,
       textCount: texts.length
     };
   }
@@ -744,16 +757,16 @@
   const exportNote = document.getElementById('exportNote');
 
   document.getElementById('exportBtn').addEventListener('click', () => {
-    const { code, shapeCount, rotatedCount, textCount } = buildWikiSyntax();
+    const { code, shapeCount, rotatedCount, rasterLayerCount, textCount } = buildWikiSyntax();
     exportCode.value = code || '(도형을 먼저 추가해주세요)';
-    let note = `회전 없는 사각형/원 ${shapeCount}개는 좌표 그대로 배경 겹치기(그라디언트)로 나갔어요.`;
+    let note = `사각형/원 ${shapeCount}개는 배경 겹치기(그라디언트)로 나갔어요.`;
     if(rotatedCount > 0){
-      note += ` 회전된 도형 ${rotatedCount}개는 <code>clip-path</code>로 윤곽선을 계산해서 개별 블록으로 넣었어요 (아직 나무위키 검증 안 됨, 실험적).`;
+      note += ` 그중 회전된 도형 ${rotatedCount}개는 가로줄 ${rasterLayerCount}개짜리 조각으로 잘게 쪼개서 그렸어요 (도트아트와 같은 원리, transform 없이 순수 배경 겹치기).`;
     }
     if(textCount > 0){
       note += ` 텍스트 ${textCount}개는 음수 <code>margin</code>으로 끌어올려 지정한 좌표에 겹치도록 계산했어요.`;
     }
-    note += ' 붙여넣어보고 안 되는 부분 있으면 알려주세요.';
+    note += ' 붙여넣어보고 결과 알려주세요.';
     exportNote.innerHTML = note;
     exportModal.classList.add('open');
   });
