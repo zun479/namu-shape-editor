@@ -726,13 +726,14 @@
   }
 
   function buildWikiSyntax(){
+    const CHUNK_SIZE = 20; // 블록 하나당 레이어 수 제한 (너무 길면 나무위키가 통째로 무시함)
     const rectEllipseShapes = shapes.filter(s => s.type === 'rect' || s.type === 'ellipse');
     const texts = shapes.filter(s => s.type === 'text').sort((a, b) => a.z - b.z);
 
-    // 사각형/원은 회전 여부와 관계없이 전부 하나의 background 겹치기 박스에 합친다.
+    // 사각형/원은 회전 여부와 관계없이 전부 배경 겹치기 레이어로 만든다.
     // 회전 없는 도형은 깔끔한 단일 레이어로, 회전된 도형은 여러 스캔라인 조각으로 확장해서 끼워 넣는다.
     const frontToBack = [...rectEllipseShapes].sort((a, b) => b.z - a.z);
-    const allLayers = [];
+    const allLayers = []; // index 0 = 가장 앞(위)
     let rasterCount = 0;
 
     frontToBack.forEach(s => {
@@ -748,15 +749,30 @@
         allLayers.push(`${image} ${s.x}px ${s.y}px / ${s.w}px ${s.h}px no-repeat`);
       }
     });
-    allLayers.push(canvasSize.bg);
 
     const lines = [];
     let flowY = 0;
+    let chunkCount = 0;
 
-    if(rectEllipseShapes.length > 0){
-      lines.push(`{{{#!wiki style="width: ${canvasSize.w}px; height: ${canvasSize.h}px; background: ${allLayers.join(', ')};"`);
-      lines.push('}}}');
-      flowY = canvasSize.h;
+    if(allLayers.length > 0){
+      // CHUNK_SIZE개씩 잘라서 여러 블록으로 만들고, 뒤쪽(배경에 가까운) 묶음을 먼저 그린 뒤
+      // 앞쪽(더 위) 묶음을 나중에 그려서, 문서 순서상 나중 요소가 위로 오는 규칙을 이용해 쌓는다.
+      const groups = [];
+      for(let i = 0; i < allLayers.length; i += CHUNK_SIZE){
+        groups.push(allLayers.slice(i, i + CHUNK_SIZE));
+      }
+      const domOrderedGroups = [...groups].reverse(); // 뒤(배경쪽) 그룹부터 먼저 배치
+      domOrderedGroups[0] = [...domOrderedGroups[0], canvasSize.bg]; // 맨 처음(가장 뒤) 블록에 배경색
+
+      const baseTop = flowY;
+      domOrderedGroups.forEach((group, idx) => {
+        const desiredTop = idx === 0 ? baseTop : baseTop; // 전부 같은 자리에 겹쳐야 함
+        const marginTop = Math.round(desiredTop - flowY);
+        lines.push(`{{{#!wiki style="width: ${canvasSize.w}px; height: ${canvasSize.h}px; margin: ${marginTop}px 0 0 0; background: ${group.join(', ')};"`);
+        lines.push('}}}');
+        flowY = desiredTop + canvasSize.h;
+        chunkCount++;
+      });
     }
 
     // 텍스트는 여전히 음수 margin으로 끌어올려 도형 위 지정 좌표에 겹친다 (검증된 방식)
@@ -787,6 +803,7 @@
       shapeCount: rectEllipseShapes.length,
       rotatedCount: rectEllipseShapes.filter(s => s.rotation).length,
       rasterLayerCount: rasterCount,
+      chunkCount,
       textCount: texts.length
     };
   }
@@ -796,11 +813,14 @@
   const exportNote = document.getElementById('exportNote');
 
   document.getElementById('exportBtn').addEventListener('click', () => {
-    const { code, shapeCount, rotatedCount, rasterLayerCount, textCount } = buildWikiSyntax();
+    const { code, shapeCount, rotatedCount, rasterLayerCount, chunkCount, textCount } = buildWikiSyntax();
     exportCode.value = code || '(도형을 먼저 추가해주세요)';
     let note = `사각형/원 ${shapeCount}개는 배경 겹치기(그라디언트)로 나갔어요.`;
+    if(chunkCount > 1){
+      note += ` 레이어가 많아서(회전 도형 포함) 블록 하나에 다 넣으면 나무위키가 통째로 씹어버리길래, <b>${chunkCount}개 블록으로 쪼개서 같은 자리에 겹쳐 쌓았어요</b>.`;
+    }
     if(rotatedCount > 0){
-      note += ` 그중 회전된 도형 ${rotatedCount}개는 가로줄 ${rasterLayerCount}개짜리 조각(${rasterStep}px 단위)으로 잘게 쪼개서 그렸어요 (도트아트와 같은 원리, transform 없이 순수 배경 겹치기). 코드가 너무 길면 상단의 "회전 정밀도" 숫자를 키워서 레이어 수를 줄여보세요.`;
+      note += ` 회전된 도형 ${rotatedCount}개는 가로줄 ${rasterLayerCount}개짜리 조각(${rasterStep}px 단위)으로 그렸어요. 그래도 안 나오면 "회전 정밀도" 숫자를 키워서 레이어 수를 더 줄여보세요.`;
     }
     if(textCount > 0){
       note += ` 텍스트 ${textCount}개는 음수 <code>margin</code>으로 끌어올려 지정한 좌표에 겹치도록 계산했어요.`;
