@@ -755,24 +755,24 @@
     let chunkCount = 0;
 
     if(allLayers.length > 0){
-      // CHUNK_SIZE개씩 잘라서 여러 블록으로 만들고, 뒤쪽(배경에 가까운) 묶음을 먼저 그린 뒤
-      // 앞쪽(더 위) 묶음을 나중에 그려서, 문서 순서상 나중 요소가 위로 오는 규칙을 이용해 쌓는다.
+      // CHUNK_SIZE개씩 잘라서, 실제 예제처럼 "계속 안으로 중첩"시켜 쌓는다.
+      // 자식이 부모 위에 그려지는 기본 규칙을 이용: 바깥쪽(먼저 열리는 것) = 가장 뒤, 안쪽(나중에 열리는 것) = 가장 앞
       const groups = [];
       for(let i = 0; i < allLayers.length; i += CHUNK_SIZE){
         groups.push(allLayers.slice(i, i + CHUNK_SIZE));
       }
-      const domOrderedGroups = [...groups].reverse(); // 뒤(배경쪽) 그룹부터 먼저 배치
-      domOrderedGroups[0] = [...domOrderedGroups[0], canvasSize.bg]; // 맨 처음(가장 뒤) 블록에 배경색
+      const nestOrder = [...groups].reverse(); // index 0 = 가장 뒤(바깥쪽) ... 마지막 = 가장 앞(안쪽)
+      nestOrder[0] = [...nestOrder[0], canvasSize.bg]; // 가장 바깥(뒤) 블록에 배경색
 
-      const baseTop = flowY;
-      domOrderedGroups.forEach((group, idx) => {
-        const desiredTop = idx === 0 ? baseTop : baseTop; // 전부 같은 자리에 겹쳐야 함
-        const marginTop = Math.round(desiredTop - flowY);
-        lines.push(`{{{#!wiki style="width: ${canvasSize.w}px; height: ${canvasSize.h}px; margin: ${marginTop}px 0 0 0; background: ${group.join(', ')};"`);
-        lines.push('}}}');
-        flowY = desiredTop + canvasSize.h;
+      nestOrder.forEach((group, idx) => {
+        const sizeStyle = idx === 0
+          ? `width: ${canvasSize.w}px; height: ${canvasSize.h}px; `
+          : 'width: 100%; height: 100%; '; // 안쪽 블록들은 바깥 크기를 그대로 물려받음
+        lines.push(`{{{#!wiki style="${sizeStyle}background: ${group.join(', ')};"`);
         chunkCount++;
       });
+      lines.push('}}}'.repeat(nestOrder.length)); // 닫는 태그를 실제 예제처럼 끝에 몰아서
+      flowY = canvasSize.h;
     }
 
     // 텍스트는 여전히 음수 margin으로 끌어올려 도형 위 지정 좌표에 겹친다 (검증된 방식)
