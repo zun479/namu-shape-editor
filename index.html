@@ -777,12 +777,13 @@
     const { bbX, bbY, bbW, bbH } = rotatedBBox(s);
     const points = rotatedLocalPoints(s);
     const strips = [];
+    const OVERLAP = 1; // 조각 사이 서브픽셀 틈(안티에일리어싱 여백)을 없애기 위해 살짝 겹치게 그림
     for(let y = 0; y < bbH; y += step){
       const span = scanlineSpan(points, y + step / 2);
       if(!span) continue;
       const [xL, xR] = span;
-      const w = Math.max(0.5, xR - xL);
-      strips.push({ x: bbX + xL, y: bbY + y, w, h: step });
+      const w = Math.max(0.5, xR - xL) + OVERLAP; // 좌우로도 살짝 넓혀 옆 조각과의 틈도 같이 없앰
+      strips.push({ x: bbX + xL - OVERLAP / 2, y: bbY + y, w, h: step + OVERLAP });
     }
     return strips;
   }
