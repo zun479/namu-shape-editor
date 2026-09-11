@@ -172,11 +172,14 @@
       <span>박스 크기</span>
       <input type="number" id="canvasW" value="500" min="50" max="2000"> ×
       <input type="number" id="canvasH" value="300" min="50" max="2000"> px
-      <span style="margin-left:6px;">배경색</span>
+      <span style="margin-left:6px;">배경(라이트)</span>
       <input type="color" id="canvasBg" value="#ffffff" style="width:36px;height:28px;padding:2px;">
+      <span style="margin-left:6px;">배경(다크)</span>
+      <input type="color" id="canvasBgDark" value="#1F1F1F" style="width:36px;height:28px;padding:2px;">
       <span style="margin-left:6px;">회전 정밀도</span>
       <input type="number" id="rasterStep" value="3" min="1" max="20" style="width:48px;" title="작을수록 매끈, 클수록 코드가 짧아짐"> px
     </div>
+    <button class="btn" id="previewModeBtn" title="라이트/다크 모드 미리보기 전환">☀️ 라이트 미리보기</button>
     <button class="btn" id="deviceSwitchBtn" title="기기 모드 변경">📱/🖥️</button>
     <button class="btn btn-primary" id="exportBtn">내보내기 (문법 생성)</button>
   </header>
@@ -253,7 +256,8 @@
   let shapes = [];
   let idCounter = 1;
   let selectedId = null;
-  let canvasSize = { w: 500, h: 300, bg: '#ffffff' };
+  let canvasSize = { w: 500, h: 300, bg: '#ffffff', bgDark: '#1F1F1F' };
+  let previewMode = 'light'; // 에디터 캔버스 미리보기용 (라이트/다크)
 
   const canvasEl = document.getElementById('canvas');
   const layerListEl = document.getElementById('layerList');
@@ -266,12 +270,13 @@
     const base = {
       id: uid(), type,
       x: Math.round(canvasSize.w/2 - 60), y: Math.round(canvasSize.h/2 - 40),
-      w: 120, h: 80, fill: '#4ADE9A', opacity: 100, z: shapes.length + 1
+      w: 120, h: 80, fill: '#4ADE9A', fillDark: '#4ADE9A', opacity: 100, z: shapes.length + 1
     };
     if(type === 'text'){
       base.w = 160; base.h = 40;
-      base.text = '텍스트 입력'; base.fontSize = 20; base.color = '#111111';
-      base.fontWeight = 700; base.fill = 'transparent'; base.align = 'center';
+      base.text = '텍스트 입력'; base.fontSize = 20;
+      base.color = '#111111'; base.colorDark = '#F2F1ED';
+      base.fontWeight = 700; base.fill = 'transparent'; base.fillDark = 'transparent'; base.align = 'center';
     }
     return base;
   }
@@ -287,15 +292,24 @@
   function applyCanvasSize(){
     canvasEl.style.width = canvasSize.w + 'px';
     canvasEl.style.height = canvasSize.h + 'px';
-    canvasEl.style.background = canvasSize.bg;
+    canvasEl.style.background = previewMode === 'dark' ? canvasSize.bgDark : canvasSize.bg;
   }
 
-  function render(){
+  // 도형/텍스트에서 지금 미리보기 모드에 맞는 색을 고르는 헬퍼
+  function pick(s, lightKey, darkKey){
+    if(previewMode === 'dark') return s[darkKey] || s[lightKey];
+    return s[lightKey];
+  }
+
+  // 캔버스(도형 그리기 + 레이어 목록)만 다시 그림 - 속성 패널의 입력창은 건드리지 않음
+  // (속성 패널을 매 타이핑마다 통째로 다시 그리면 모바일에서 입력 중 키보드가 내려가 버림)
+  function renderCanvas(){
     applyCanvasSize();
     canvasEl.innerHTML = '';
     const sorted = [...shapes].sort((a,b) => a.z - b.z);
     sorted.forEach(s => {
       const isRotated = (s.type === 'rect' || s.type === 'ellipse') && s.rotation;
+      const fillNow = (s.type === 'rect' || s.type === 'ellipse' || s.type === 'text') ? pick(s, 'fill', 'fillDark') : s.fill;
 
       // 회전 도형: 실제 나무위키에 나갈 계단형 래스터 결과를 그대로 미리보기 (정확도 판단용)
       if(isRotated){
@@ -307,7 +321,7 @@
           strip.style.top = st.y + 'px';
           strip.style.width = st.w + 'px';
           strip.style.height = st.h + 'px';
-          strip.style.background = s.fill;
+          strip.style.background = fillNow;
           strip.style.opacity = (s.opacity ?? 100) / 100;
           strip.style.zIndex = s.z;
           strip.style.pointerEvents = 'none';
@@ -332,12 +346,12 @@
           el.style.border = '1px dashed rgba(255,255,255,0.55)';
           el.style.opacity = 1;
         } else {
-          el.style.background = s.fill;
+          el.style.background = fillNow;
         }
         el.style.borderRadius = s.type === 'ellipse' ? '50%' : '0px';
       } else if(s.type === 'text'){
-        el.style.background = s.fill === 'transparent' ? 'transparent' : s.fill;
-        el.style.color = s.color;
+        el.style.background = fillNow === 'transparent' ? 'transparent' : fillNow;
+        el.style.color = pick(s, 'color', 'colorDark');
         el.style.fontSize = s.fontSize + 'px';
         el.style.fontWeight = s.fontWeight;
         el.style.justifyContent = s.align === 'left' ? 'flex-start' : s.align === 'right' ? 'flex-end' : 'center';
@@ -365,12 +379,17 @@
         if(e.target.classList.contains('resize-handle') || e.target.classList.contains('rotate-handle')) return;
         selectedId = s.id;
         startDrag(e, s.id);
-        render();
+        render(); // 선택 대상이 바뀌므로 속성 패널도 갱신 필요
       });
 
       canvasEl.appendChild(el);
     });
     renderLayerList();
+  }
+
+  // 전체 갱신 (캔버스 + 속성 패널). 선택 변경/도형 추가삭제처럼 패널 내용 자체가 바뀔 때만 사용.
+  function render(){
+    renderCanvas();
     renderProps();
   }
 
@@ -437,14 +456,14 @@
 
     const rowPos = document.createElement('div');
     rowPos.className = 'field-row';
-    rowPos.appendChild(field('X', numberInput(s.x, v => { s.x = v; render(); })));
-    rowPos.appendChild(field('Y', numberInput(s.y, v => { s.y = v; render(); })));
+    rowPos.appendChild(field('X', numberInput(s.x, v => { s.x = v; renderCanvas(); })));
+    rowPos.appendChild(field('Y', numberInput(s.y, v => { s.y = v; renderCanvas(); })));
     propsPanel.appendChild(rowPos);
 
     const rowSize = document.createElement('div');
     rowSize.className = 'field-row';
-    rowSize.appendChild(field('너비', numberInput(s.w, v => { s.w = Math.max(4,v); render(); }, {min:4})));
-    rowSize.appendChild(field('높이', numberInput(s.h, v => { s.h = Math.max(4,v); render(); }, {min:4})));
+    rowSize.appendChild(field('너비', numberInput(s.w, v => { s.w = Math.max(4,v); renderCanvas(); }, {min:4})));
+    rowSize.appendChild(field('높이', numberInput(s.h, v => { s.h = Math.max(4,v); renderCanvas(); }, {min:4})));
     propsPanel.appendChild(rowSize);
 
     const opWrap = document.createElement('div');
@@ -453,12 +472,42 @@
     opLabel.textContent = `불투명도 (${s.opacity}%)`;
     const opInput = document.createElement('input');
     opInput.type = 'range'; opInput.min = 0; opInput.max = 100; opInput.value = s.opacity;
-    opInput.addEventListener('input', () => { s.opacity = Number(opInput.value); opLabel.textContent = `불투명도 (${s.opacity}%)`; render(); });
+    opInput.addEventListener('input', () => { s.opacity = Number(opInput.value); opLabel.textContent = `불투명도 (${s.opacity}%)`; renderCanvas(); });
     opWrap.appendChild(opLabel); opWrap.appendChild(opInput);
     propsPanel.appendChild(opWrap);
 
+    // 라이트/다크 두 색을 나란히 놓는 헬퍼
+    function dualColorField(labelText, lightVal, darkVal, onLight, onDark){
+      const wrap = document.createElement('div');
+      wrap.className = 'field';
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      wrap.appendChild(label);
+      const row = document.createElement('div');
+      row.className = 'field-row';
+      const lightField = document.createElement('div');
+      lightField.className = 'field';
+      const lightTag = document.createElement('label');
+      lightTag.style.fontWeight = '400'; lightTag.textContent = '☀️ 라이트';
+      lightField.appendChild(lightTag);
+      lightField.appendChild(colorInput(lightVal, onLight));
+      const darkField = document.createElement('div');
+      darkField.className = 'field';
+      const darkTag = document.createElement('label');
+      darkTag.style.fontWeight = '400'; darkTag.textContent = '🌙 다크';
+      darkField.appendChild(darkTag);
+      darkField.appendChild(colorInput(darkVal, onDark));
+      row.appendChild(lightField); row.appendChild(darkField);
+      wrap.appendChild(row);
+      return wrap;
+    }
+
     if(s.type === 'rect' || s.type === 'ellipse'){
-      propsPanel.appendChild(field('채우기 색', colorInput(s.fill, v => { s.fill = v; render(); })));
+      propsPanel.appendChild(dualColorField('채우기 색',
+        s.fill, s.fillDark || s.fill,
+        v => { s.fill = v; renderCanvas(); },
+        v => { s.fillDark = v; renderCanvas(); }
+      ));
 
       const rotWrap = document.createElement('div');
       rotWrap.className = 'field';
@@ -466,7 +515,7 @@
       rotLabel.textContent = `회전 (${s.rotation || 0}°)`;
       const rotInput = document.createElement('input');
       rotInput.type = 'range'; rotInput.min = -180; rotInput.max = 180; rotInput.value = s.rotation || 0;
-      rotInput.addEventListener('input', () => { s.rotation = Number(rotInput.value); rotLabel.textContent = `회전 (${s.rotation}°)`; render(); });
+      rotInput.addEventListener('input', () => { s.rotation = Number(rotInput.value); rotLabel.textContent = `회전 (${s.rotation}°)`; renderCanvas(); });
       rotWrap.appendChild(rotLabel); rotWrap.appendChild(rotInput);
       propsPanel.appendChild(rotWrap);
 
@@ -479,12 +528,12 @@
     } else if(s.type === 'text'){
       const ta = document.createElement('textarea');
       ta.value = s.text;
-      ta.addEventListener('input', () => { s.text = ta.value; render(); });
+      ta.addEventListener('input', () => { s.text = ta.value; renderCanvas(); });
       propsPanel.appendChild(field('내용', ta));
 
       const rowText = document.createElement('div');
       rowText.className = 'field-row';
-      rowText.appendChild(field('글자 크기', numberInput(s.fontSize, v => { s.fontSize = v; render(); }, {min:6})));
+      rowText.appendChild(field('글자 크기', numberInput(s.fontSize, v => { s.fontSize = v; renderCanvas(); }, {min:6})));
       const alignSel = document.createElement('select');
       ['left','center','right'].forEach(a => {
         const opt = document.createElement('option');
@@ -492,11 +541,15 @@
         if(a === s.align) opt.selected = true;
         alignSel.appendChild(opt);
       });
-      alignSel.addEventListener('change', () => { s.align = alignSel.value; render(); });
+      alignSel.addEventListener('change', () => { s.align = alignSel.value; renderCanvas(); });
       rowText.appendChild(field('정렬', alignSel));
       propsPanel.appendChild(rowText);
 
-      propsPanel.appendChild(field('글자 색', colorInput(s.color, v => { s.color = v; render(); })));
+      propsPanel.appendChild(dualColorField('글자 색',
+        s.color, s.colorDark || s.color,
+        v => { s.color = v; renderCanvas(); },
+        v => { s.colorDark = v; renderCanvas(); }
+      ));
 
       const bgWrap = document.createElement('div');
       bgWrap.className = 'field';
@@ -509,11 +562,20 @@
         if((v === 'transparent') === (s.fill === 'transparent')) opt.selected = true;
         bgToggle.appendChild(opt);
       });
-      bgToggle.addEventListener('change', () => { s.fill = bgToggle.value === 'transparent' ? 'transparent' : '#FFF3B0'; render(); });
+      bgToggle.addEventListener('change', () => {
+        if(bgToggle.value === 'transparent'){ s.fill = 'transparent'; s.fillDark = 'transparent'; }
+        else { s.fill = '#FFF3B0'; s.fillDark = s.fillDark && s.fillDark !== 'transparent' ? s.fillDark : '#3A3520'; }
+        renderCanvas();
+        renderProps(); // 배경 색 필드 표시 여부가 바뀌므로 패널 다시 그림 (텍스트 입력창이 아니라 select라 포커스 문제 없음)
+      });
       bgWrap.appendChild(bgLabel); bgWrap.appendChild(bgToggle);
       propsPanel.appendChild(bgWrap);
       if(s.fill !== 'transparent'){
-        propsPanel.appendChild(field('배경 색', colorInput(s.fill, v => { s.fill = v; render(); })));
+        propsPanel.appendChild(dualColorField('배경 색',
+          s.fill, s.fillDark || s.fill,
+          v => { s.fill = v; renderCanvas(); },
+          v => { s.fillDark = v; renderCanvas(); }
+        ));
       }
     }
 
@@ -538,12 +600,12 @@
   function bringToFront(id){
     const maxZ = Math.max(0, ...shapes.map(s => s.z));
     getShape(id).z = maxZ + 1;
-    render();
+    renderCanvas();
   }
   function sendToBack(id){
     const minZ = Math.min(0, ...shapes.map(s => s.z));
     getShape(id).z = minZ - 1;
-    render();
+    renderCanvas();
   }
 
   // --- Drag ---
@@ -557,7 +619,7 @@
       if(ev.pointerId !== pointerId) return;
       s.x = Math.round(origX + (ev.clientX - startX));
       s.y = Math.round(origY + (ev.clientY - startY));
-      render();
+      renderCanvas();
     }
     function onUp(ev){
       if(ev.pointerId !== pointerId) return;
@@ -581,7 +643,7 @@
       if(ev.pointerId !== pointerId) return;
       s.w = Math.max(4, Math.round(origW + (ev.clientX - startX)));
       s.h = Math.max(4, Math.round(origH + (ev.clientY - startY)));
-      render();
+      renderCanvas();
     }
     function onUp(ev){
       if(ev.pointerId !== pointerId) return;
@@ -607,7 +669,7 @@
       if(ev.pointerId !== pointerId) return;
       const angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI + 90;
       s.rotation = Math.round(angle);
-      render();
+      renderCanvas();
     }
     function onUp(ev){
       if(ev.pointerId !== pointerId) return;
@@ -627,12 +689,19 @@
   document.querySelectorAll('[data-add]').forEach(btn => {
     btn.addEventListener('click', () => addShape(btn.dataset.add));
   });
-  document.getElementById('canvasW').addEventListener('input', (e) => { canvasSize.w = Math.max(50, Number(e.target.value) || 50); render(); });
-  document.getElementById('canvasH').addEventListener('input', (e) => { canvasSize.h = Math.max(50, Number(e.target.value) || 50); render(); });
-  document.getElementById('canvasBg').addEventListener('input', (e) => { canvasSize.bg = e.target.value; render(); });
+  document.getElementById('canvasW').addEventListener('input', (e) => { canvasSize.w = Math.max(50, Number(e.target.value) || 50); renderCanvas(); });
+  document.getElementById('canvasH').addEventListener('input', (e) => { canvasSize.h = Math.max(50, Number(e.target.value) || 50); renderCanvas(); });
+  document.getElementById('canvasBg').addEventListener('input', (e) => { canvasSize.bg = e.target.value; renderCanvas(); });
+  document.getElementById('canvasBgDark').addEventListener('input', (e) => { canvasSize.bgDark = e.target.value; renderCanvas(); });
   document.getElementById('rasterStep').addEventListener('input', (e) => {
     rasterStep = Math.max(1, Math.min(20, Number(e.target.value) || 3));
-    render();
+    renderCanvas();
+  });
+  const previewModeBtn = document.getElementById('previewModeBtn');
+  previewModeBtn.addEventListener('click', () => {
+    previewMode = previewMode === 'light' ? 'dark' : 'light';
+    previewModeBtn.textContent = previewMode === 'light' ? '☀️ 라이트 미리보기' : '🌙 다크 미리보기';
+    renderCanvas();
   });
 
   // --- Export ---
@@ -728,48 +797,58 @@
   function buildWikiSyntax(){
     const CHUNK_SIZE = 1; // 나무위키 공식 규정: style 값 하나에 콤마가 13개 넘으면 그 속성 전체가 무시됨.
                           // rgba() 하나에 이미 콤마 3개라 레이어 2개만 합쳐도 쉽게 13개를 넘기므로, 1개씩만 묶는다.
+    const px = n => (typeof n === 'number' ? n.toFixed(1) : n) + 'px';
+
     const rectEllipseShapes = shapes.filter(s => s.type === 'rect' || s.type === 'ellipse');
     const texts = shapes.filter(s => s.type === 'text').sort((a, b) => a.z - b.z);
 
-    // 사각형/원은 회전 여부와 관계없이 전부 배경 겹치기 레이어로 만든다.
-    // 회전 없는 도형은 깔끔한 단일 레이어로, 회전된 도형은 여러 스캔라인 조각으로 확장해서 끼워 넣는다.
+    // 사각형/원(회전 포함)을 "위치/크기 + 라이트색 + 다크색" 구조체 목록으로 변환
     const frontToBack = [...rectEllipseShapes].sort((a, b) => b.z - a.z);
-    const allLayers = []; // index 0 = 가장 앞(위)
+    const layerSpecs = []; // index 0 = 가장 앞(위)
     let rasterCount = 0;
 
     frontToBack.forEach(s => {
+      const light = hexToRgba(s.fill, s.opacity);
+      const dark = hexToRgba(s.fillDark || s.fill, s.opacity);
       if(s.rotation){
-        const raster = rasterizeShapeLayers(s, rasterStep);
-        rasterCount += raster.length;
-        allLayers.push(...raster);
+        const strips = rasterizeShapeStrips(s, rasterStep);
+        rasterCount += strips.length;
+        strips.forEach(st => layerSpecs.push({ ellipse: false, x: st.x, y: st.y, w: st.w, h: st.h, light, dark }));
       } else {
-        const color = hexToRgba(s.fill, s.opacity);
-        const image = s.type === 'ellipse'
-          ? `radial-gradient(ellipse 50% 50% at 50% 50%, ${color} 99%, transparent 100%)`
-          : `linear-gradient(${color}, ${color})`;
-        allLayers.push(`${image} ${s.x}px ${s.y}px / ${s.w}px ${s.h}px no-repeat`);
+        layerSpecs.push({ ellipse: s.type === 'ellipse', x: s.x, y: s.y, w: s.w, h: s.h, light, dark });
       }
     });
+
+    function layerCss(spec, color){
+      return spec.ellipse
+        ? `radial-gradient(ellipse 50% 50% at 50% 50%, ${color} 99%, transparent 100%) ${px(spec.x)} ${px(spec.y)} / ${px(spec.w)} ${px(spec.h)} no-repeat`
+        : `linear-gradient(${color}, ${color}) ${px(spec.x)} ${px(spec.y)} / ${px(spec.w)} ${px(spec.h)} no-repeat`;
+    }
 
     const lines = [];
     let flowY = 0;
     let chunkCount = 0;
 
-    if(allLayers.length > 0){
+    if(layerSpecs.length > 0){
       // CHUNK_SIZE개씩 잘라서, 실제 예제처럼 "계속 안으로 중첩"시켜 쌓는다.
       // 자식이 부모 위에 그려지는 기본 규칙을 이용: 바깥쪽(먼저 열리는 것) = 가장 뒤, 안쪽(나중에 열리는 것) = 가장 앞
       const groups = [];
-      for(let i = 0; i < allLayers.length; i += CHUNK_SIZE){
-        groups.push(allLayers.slice(i, i + CHUNK_SIZE));
+      for(let i = 0; i < layerSpecs.length; i += CHUNK_SIZE){
+        groups.push(layerSpecs.slice(i, i + CHUNK_SIZE));
       }
       const nestOrder = [...groups].reverse(); // index 0 = 가장 뒤(바깥쪽) ... 마지막 = 가장 앞(안쪽)
-      nestOrder[0] = [...nestOrder[0], canvasSize.bg]; // 가장 바깥(뒤) 블록에 배경색
 
       nestOrder.forEach((group, idx) => {
         const sizeStyle = idx === 0
           ? `width: ${canvasSize.w}px; height: ${canvasSize.h}px; `
           : 'width: 100%; height: 100%; '; // 안쪽 블록들은 바깥 크기를 그대로 물려받음
-        lines.push(`{{{#!wiki style="${sizeStyle}background: ${group.join(', ')};"`);
+        const lightLayers = group.map(spec => layerCss(spec, spec.light));
+        const darkLayers = group.map(spec => layerCss(spec, spec.dark));
+        if(idx === 0){
+          lightLayers.push(canvasSize.bg);
+          darkLayers.push(canvasSize.bgDark);
+        }
+        lines.push(`{{{#!wiki style="${sizeStyle}background: ${lightLayers.join(', ')};" dark-style="background: ${darkLayers.join(', ')};"`);
         chunkCount++;
       });
       lines.push('}}}'.repeat(nestOrder.length)); // 닫는 태그를 실제 예제처럼 끝에 몰아서
@@ -779,21 +858,23 @@
     // 텍스트는 여전히 음수 margin으로 끌어올려 도형 위 지정 좌표에 겹친다 (검증된 방식)
     texts.forEach(s => {
       const marginTop = Math.round(s.y - flowY);
-      const styleParts = [
+      const lightStyle = [
         `width: ${s.w}px`,
         `height: ${s.h}px`,
         `margin: ${marginTop}px 0 0 ${s.x}px`,
         'overflow: hidden',
         `font-size: ${s.fontSize}px`,
         `font-weight: ${s.fontWeight}`,
-        `color: ${s.color}`,
         `text-align: ${s.align}`,
         'display: flex',
         'align-items: center',
-        `justify-content: ${s.align === 'left' ? 'flex-start' : s.align === 'right' ? 'flex-end' : 'center'}`
+        `justify-content: ${s.align === 'left' ? 'flex-start' : s.align === 'right' ? 'flex-end' : 'center'}`,
+        `color: ${s.color}`
       ];
-      if(s.fill && s.fill !== 'transparent') styleParts.push(`background-color: ${s.fill}`);
-      lines.push(`{{{#!wiki style="${styleParts.join('; ')};"`);
+      const darkStyle = [`color: ${s.colorDark || s.color}`];
+      if(s.fill && s.fill !== 'transparent') lightStyle.push(`background-color: ${s.fill}`);
+      if(s.fillDark && s.fillDark !== 'transparent') darkStyle.push(`background-color: ${s.fillDark}`);
+      lines.push(`{{{#!wiki style="${lightStyle.join('; ')};" dark-style="${darkStyle.join('; ')};"`);
       lines.push(s.text);
       lines.push('}}}');
       flowY = s.y + s.h;
@@ -827,6 +908,7 @@
       note += ` 텍스트 ${textCount}개는 음수 <code>margin</code>으로 끌어올려 지정한 좌표에 겹치도록 계산했어요.`;
     }
     note += ' 붙여넣어보고 결과 알려주세요.';
+    note += ' 모든 블록에 <code>dark-style</code>도 같이 넣어서, 나무위키 다크모드에서 지정한 다크 색상으로 바뀌도록 했어요.';
     exportNote.innerHTML = note;
     exportModal.classList.add('open');
   });
